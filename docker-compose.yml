@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: databreach_postgres
+    environment:
+      POSTGRES_DB: databreach
+      POSTGRES_USER: databreach
+      POSTGRES_PASSWORD: databreach123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U databreach"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: databreach_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: databreach_backend
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - DATABASE_URL=postgresql+asyncpg://databreach:databreach123@postgres:5432/databreach
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=databreach
+      - POSTGRES_PASSWORD=databreach123
+      - POSTGRES_DB=databreach
+      - REDIS_HOST=redis
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - tor_data:/var/lib/tor
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: databreach_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Tor Proxy (for deep web access)
+  tor:
+    image: dperson/torproxy
+    container_name: databreach_tor
+    ports:
+      - "8118:8118"  # HTTP proxy
+      - "9050:9050"  # SOCKS5 proxy
+    environment:
+      - TORUSER=databreach
+    volumes:
+      - tor_data:/var/lib/tor
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  tor_data:
+    driver: local
+
+networks:
+  default:
+    name: databreach_network
